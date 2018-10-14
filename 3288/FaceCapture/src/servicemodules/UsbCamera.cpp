@@ -1,0 +1,286 @@
+#include "UsbCamera.h"
+#include <unistd.h>
+#include <stdio.h>
+#include "cv.h"
+#include "../baseutils/RrConfig.h"
+#include "../baseutils/Mat2Img.h"
+#include "../../logprocessor.h"
+namespace rr
+{
+UsbCamera::UsbCamera() :cap_(NULL), sender_video_(NULL), thread_flag_(false), width_(640), height_(480), fps_(30), filename_(""), video_flag_(false), ipc_id_(""), dev_id_(""),quit_process_(true), time_out_(0)
+{
+
+	RrConfig config;
+	config.ReadConfig("config.ini");
+	width_ = config.ReadInt("UsbCamera", "Width", 640);
+	height_ = config.ReadInt("UsbCamera", "Height", 480);
+	fps_ = config.ReadInt("UsbCamera", "Fps", 30);
+	filename_ = config.ReadString("UsbCamera", "FileName", "/dev/video0");
+	char* avifilename = NULL;
+	int format = V4L2_PIX_FMT_MJPEG;
+	int grapmethod = 1;
+#if 0
+	cap_ = (struct vdIn *) calloc(1, sizeof(struct vdIn));
+	if (init_videoIn(cap_, (char*)filename_.c_str(), width_, height_, fps_, format, grapmethod, avifilename) < 0)
+	{
+		printf("init_videoIn failed\n");
+		return;
+	}
+	if (video_enable(cap_))
+	{
+		printf("video enable failed\n");
+		return;
+	}
+#endif
+	cap_cv_ = new cv::VideoCapture();
+	if (cap_cv_ == NULL)
+	{
+		printf("cap_cv is NULL\n");
+		return;
+	}
+	
+	sender_video_ = new SendVideo();
+	if (sender_video_ == NULL)
+	{
+		printf("create sender video failed");
+		return;
+	}
+}
+
+UsbCamera::~UsbCamera()
+{
+#if 0
+	if (cap_)
+	{
+
+		free(cap_);
+		cap_ = NULL;
+	}
+#endif
+	if (cap_cv_)
+	{
+		delete cap_cv_;
+		cap_cv_ = NULL;
+	}
+	
+	if (sender_video_)
+	{
+		delete sender_video_;
+		sender_video_ = NULL;
+	}
+}
+
+
+
+void UsbCamera::Open()
+{
+	if (cap_cv_ == NULL)
+	{
+		printf("open camera fialed\n");
+		return;
+	}
+	if (false == cap_cv_->open(0))
+	{
+		printf("start : m_pVCaptureIns->open(%s) ERROR!!!");
+		return;
+	}
+	cap_cv_->set(CV_CAP_PROP_FRAME_WIDTH, width_);
+	cap_cv_->set(CV_CAP_PROP_FRAME_HEIGHT, height_);
+	face_detector_->start();
+	printf("detect start!\n");
+	sender_video_->start();
+	printf("sender video start!\n");
+	thread_flag_ = true;
+	pthread_create(&id_, NULL, work, this);
+	pthread_create(&id_, NULL, quit, this);
+}
+
+void UsbCamera::Close()
+{
+	thread_flag_ = false;
+	pthread_join(id_, NULL);
+	face_detector_->stop();
+#if 0
+	close_v4l2(cap_);
+#endif
+}
+
+void UsbCamera::Run()
+{
+
+#if 1
+
+	if (cap_cv_ == NULL || face_detector_ == NULL)
+	{
+		printf("thread failed!!!!\n");
+		return;
+	}
+
+	Mat2Img img;
+#if 0
+	cap_->buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	cap_->buf.memory = V4L2_MEMORY_MMAP;
+#endif
+	long long framecount = 0;
+	static int reboot = 0;
+	while (thread_flag_)
+	{
+		try{
+			cv::Mat frame;
+#if 0
+			int ret = ioctl(cap_->fd, VIDIOC_DQBUF, &cap_->buf);
+			if (ret < 0)
+			{
+				printf("Unable to dequeue buffer, please restart device, ret=%d\n", ret);
+				if (++reboot > 500)
+				{
+					printf("reboot!!!!!!\n");
+					Close();
+					system("sudo shutdown -r now");
+				}
+				
+				continue;
+			}
+			memcpy(cap_->tmpbuffer, cap_->mem[cap_->buf.index], cap_->buf.bytesused);
+			//add code to convert jpeg buf to mat
+			if ((framecount % rate_ == 0))
+			{
+
+				std::vector<unsigned char> data;
+				data.assign((unsigned char*)cap_->tmpbuffer, (unsigned char*)cap_->tmpbuffer + cap_->buf.bytesused);
+				OutputLog_Info("cap buf size=%d", cap_->buf.bytesused);
+				OutputLog_Info("jpeg in");
+				img.JPEGToMat(frame, data);
+				OutputLog_Info("jpeg out");
+
+			
+			//printf("recv img\n");
+			}
+			if (video_flag_ && (framecount % rate_ == 0))
+			{
+
+				printf("full view ipc=%s,devid=%s\n", ipc_id_.c_str(), dev_id_.c_str());
+				std::vector<unsigned char> jpg;
+				jpg.assign((unsigned char*)cap_->tmpbuffer, (unsigned char*)cap_->tmpbuffer + cap_->buf.bytesused);
+				sender_video_->RevImg(jpg);
+				sender_video_->PostSem();
+				sender_video_->setIpcId(ipc_id_);
+				sender_video_->setDevID(dev_id_);
+
+			}	
+			//printf("frame count = %d\n", cap_->framecount);
+			ret = ioctl(cap_->fd, VIDIOC_QBUF, &cap_->buf);
+			if (ret < 0)
+			{
+
+				printf("Unable to requeue buffer, please restart device\n");
+				continue;
+			}
+#endif
+			if (false == cap_cv_->read(frame))
+			{
+				continue;
+			}
+			face_detector_->RecvRtImg(frame);
+			printf("framecount=%d\n", ++framecount);
+			if (video_flag_ && (framecount % rate_ == 0))
+			{
+
+				printf("full view ipc=%s,devid=%s\n", ipc_id_.c_str(), dev_id_.c_str());
+				std::vector<unsigned char> jpg;
+				img.MatToByteArray(frame, jpg);
+				sender_video_->RevImg(jpg);
+				sender_video_->PostSem();
+				sender_video_->setIpcId(ipc_id_);
+				sender_video_->setDevID(dev_id_);
+
+			}
+			time_out_ = (long)getTickCount();
+			usleep(30000);
+			if(framecount > 10000)
+			{
+				framecount = 0;
+			}
+		}
+
+		catch(...)
+		{
+
+			printf("camera error!!!\n");
+			break;
+		}
+	}
+
+#endif
+
+}
+
+
+
+void UsbCamera::setVideoFlag(const std::string& flag, const std::string& ipcid, const std::string& devid)
+{
+
+	if (flag == "true")
+	{
+
+		video_flag_ = true;
+		ipc_id_ = ipcid;
+		dev_id_ = devid;
+	}
+	else
+	{
+		video_flag_ = false;
+	}
+
+}
+
+
+
+void* UsbCamera::work(void* param)
+{
+	UsbCamera* camera = static_cast<UsbCamera*>(param);
+	if (camera)
+	{
+		camera->Run();
+	}
+	else
+	{
+		printf("do not work\n");
+	}
+}
+
+void* UsbCamera::quit(void* param)
+{
+	UsbCamera* camera = static_cast<UsbCamera*>(param);
+	if (camera)
+	{
+		camera->QuitProcess();
+	}
+	else
+	{
+		printf("do not quit\n");
+	}
+
+}
+
+void UsbCamera::QuitProcess()
+{
+	while (1)
+	{
+		if (getTickCount() - time_out_ > 300000)
+		{
+			quit_process_ = false;
+		}
+		printf("Alive =%d\n", getTickCount());
+		usleep(10000);
+	}
+}
+
+bool UsbCamera::getQuitState() const
+{
+	return quit_process_;
+}
+
+
+}
+
