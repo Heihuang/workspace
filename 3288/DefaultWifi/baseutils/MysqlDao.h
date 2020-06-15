@@ -14,6 +14,9 @@ public:
 		try
 		{
 			conn_ = mysql_init(conn_);
+                        unsigned int timeout = 5;
+                        mysql_options(conn_, MYSQL_OPT_CONNECT_TIMEOUT, (const char *)&timeout);
+			
 		}
 		catch (...)
 		{
@@ -70,7 +73,7 @@ public:
 				printf("sql = %s\n", sql);
 				return false;
 			}
-			res_ = mysql_store_result(conn_);//将结果保存在res结构体中
+			res_ = mysql_store_result(conn_);//陆芦陆谩鹿没卤拢麓忙脭脷res陆谩鹿鹿脤氓脰脨
 		}
 		catch (...)
 		{
